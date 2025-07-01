@@ -52,3 +52,17 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# === Additional entries for Visual Studio & Copilot ===
+
+# Visual Studio user-specific folders
+.vs/
+*.user
+*.suo
+*.csproj.user
+
+# GitHub Copilot Index
+CopilotIndices/
+
+# Visual Studio content/index caches
+FileContentIndex/
