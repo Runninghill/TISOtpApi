@@ -1,0 +1,6 @@
+@TISOtpApi_HostAddress = http://localhost:5227
+
+GET {{TISOtpApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
