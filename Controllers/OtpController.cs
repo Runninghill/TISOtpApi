@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using TISOtpApi.Data;
+using TISOtpApi.Data.Dtos;
 using TISOtpApi.Models;
 
 namespace TISOtpApi.Controllers;
@@ -19,6 +20,9 @@ public class OtpController : ControllerBase
 
     private readonly OtpDbContext _db;
     private readonly Random _rng = new();
+    private const int MaxAttempts = 3;
+    private const int OtpExpirySeconds = 60;
+    private const int RequestThrottleSeconds = 10;
 
     public OtpController(OtpDbContext db)
     {
@@ -26,52 +30,74 @@ public class OtpController : ControllerBase
     }
 
     [HttpPost("request")]
-    public IActionResult RequestOtp([FromBody] string email)
+    public IActionResult RequestOtp([FromBody] OtpRequestDto request)
     {
+        var email = request.Email.Trim().ToLowerInvariant();
         if (!ValidEmails.Contains(email))
             return BadRequest("Email not found.");
 
-        var otpCode = _rng.Next(100000, 999999).ToString();
-
         var existing = _db.OtpEntries.FirstOrDefault(e => e.Email == email);
         if (existing != null)
+        {
+            var now = DateTime.UtcNow;
+            var secondsSinceLast = (now - existing.GeneratedAt).TotalSeconds;
+            if (secondsSinceLast < RequestThrottleSeconds)
+            {
+                return BadRequest($"OTP was already generated recently. Please wait {Math.Ceiling(10 - secondsSinceLast)} seconds before requesting a new OTP.");
+            }
             _db.OtpEntries.Remove(existing);
+        }
 
+        var otpCode = _rng.Next(100000, 999999).ToString();
         _db.OtpEntries.Add(new OtpEntry
         {
             Email = email,
-            OtpCode = otpCode
+            OtpCode = otpCode,
+            GeneratedAt = DateTime.UtcNow
         });
 
         _db.SaveChanges();
 
-        // In a real system, you'd send this via SMS. For demo, return it.
+        //Return OTP for demo purposes
         return Ok(new { email, otp = otpCode });
     }
 
     [HttpPost("verify")]
-    public IActionResult VerifyOtp([FromBody] OtpEntry input)
+    public IActionResult VerifyOtp([FromBody] OtpVerifyDto input)
     {
-        var entry = _db.OtpEntries.FirstOrDefault(e => e.Email == input.Email);
+        var entry = _db.OtpEntries.FirstOrDefault(e => e.Email == input.Email.Trim().ToLowerInvariant());
         if (entry == null)
-            return BadRequest("OTP not found.");
+            return BadRequest("Validation failed, request new OTP.");
 
         if (entry.IsUsed)
-            return BadRequest("OTP already used.");
+            return BadRequest("OTP already used. Remaining Attempts: 0");
 
-        if (entry.FailedAttempts >= 3)
-            return BadRequest("Too many attempts. OTP expired.");
+        // Check if OTP is expired (older than 1 minute)
+        if ((DateTime.UtcNow - entry.GeneratedAt).TotalSeconds > OtpExpirySeconds)
+        {
+            _db.OtpEntries.Remove(entry);
+            _db.SaveChanges();
+            return BadRequest("OTP expired. Remaining Attempts: 0");
+        }
 
         if (entry.OtpCode != input.OtpCode)
         {
             entry.FailedAttempts++;
+            if (entry.FailedAttempts >= MaxAttempts)
+            {
+                _db.OtpEntries.Remove(entry);
+                _db.SaveChanges();
+                return BadRequest("Too many attempts. OTP expired.");
+            }
+
             _db.SaveChanges();
-            return BadRequest("Invalid OTP.");
+            int remaining = MaxAttempts - entry.FailedAttempts;
+            return BadRequest($"Invalid OTP. Remaining Attempts: {remaining}");
         }
 
         entry.IsUsed = true;
         _db.SaveChanges();
 
-        return Ok("OTP verified successfully.");
+        return Ok(new { message = "OTP verified successfully" });
     }
 }
